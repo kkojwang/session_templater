@@ -662,7 +662,8 @@ def create_sample_config(style: str = 'default', output_format: str = 'yaml') ->
         content = json.dumps(config, indent=2)
         ext = 'json'
 
-    filename = f"template_{style}.{ext}"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    filename = os.path.join(script_dir, f"template_{style}.{ext}")
     with open(filename, 'w') as f:
         f.write(content)
 
