@@ -361,8 +361,11 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
             print("  No tracks defined in config, keeping base file tracks.")
         return root
 
-    # Clear existing tracks
+    # Clear existing tracks (but preserve ReturnTracks!)
+    return_elements = []
     for child in list(tracks_el):
+        if child.tag == 'ReturnTrack':
+            return_elements.append(child)
         tracks_el.remove(child)
 
     # First pass: identify groups and assign IDs
@@ -442,9 +445,13 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
 
         current_id += 1
 
+    # Re-add preserved return tracks (must come after regular tracks in the XML)
+    for rt in return_elements:
+        tracks_el.append(rt)
+
     # ── Process return tracks ──
     if return_defs:
-        existing_returns = live_set.findall('.//ReturnTrack')
+        existing_returns = [el for el in tracks_el if el.tag == 'ReturnTrack']
         if existing_returns:
             # Only rename/recolor existing return tracks.
             # Adding new returns would break send knob counts on tracks.
@@ -891,10 +898,8 @@ Workflow:
                         help='Base .als file to use as template (any valid Ableton set)')
     parser.add_argument('--config', '-c', type=str,
                         help='Config file (YAML or JSON) defining the session')
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
-    parser.add_argument('--output', '-o', type=str,
-                        default=os.path.join(_script_dir, 'session_output.als'),
-                        help='Output .als filename (default: session_templater/session_output.als)')
+    parser.add_argument('--output', '-o', type=str, default='session_output.als',
+                        help='Output .als filename (default: session_output.als)')
     parser.add_argument('--no-compress', action='store_true',
                         help='Save as uncompressed XML (Ableton can read both)')
 
