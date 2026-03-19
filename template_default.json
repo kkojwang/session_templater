@@ -1,0 +1,65 @@
+{
+  "bpm": 120,
+  "time_signature": "4/4",
+  "tracks": [
+    {
+      "name": "Drums",
+      "type": "group",
+      "color": "dark_orange"
+    },
+    {
+      "name": "Kick",
+      "type": "midi",
+      "color": "orange",
+      "group": "Drums"
+    },
+    {
+      "name": "Snare",
+      "type": "midi",
+      "color": "orange",
+      "group": "Drums"
+    },
+    {
+      "name": "Hats",
+      "type": "midi",
+      "color": "yellow",
+      "group": "Drums"
+    },
+    {
+      "name": "Perc",
+      "type": "midi",
+      "color": "yellow",
+      "group": "Drums"
+    },
+    {
+      "name": "Bass",
+      "type": "midi",
+      "color": "purple"
+    },
+    {
+      "name": "Synth 1",
+      "type": "midi",
+      "color": "violet"
+    },
+    {
+      "name": "Synth 2",
+      "type": "midi",
+      "color": "violet"
+    },
+    {
+      "name": "Vocal",
+      "type": "audio",
+      "color": "pink"
+    }
+  ],
+  "returns": [
+    {
+      "name": "Reverb",
+      "color": "blue"
+    },
+    {
+      "name": "Delay",
+      "color": "cyan"
+    }
+  ]
+}
