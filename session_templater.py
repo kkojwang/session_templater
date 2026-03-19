@@ -343,7 +343,8 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
     existing_audio = tracks_el.findall('AudioTrack')
     existing_group = tracks_el.findall('GroupTrack')
 
-    midi_template = existing_midi[0] if existing_midi else None
+    drum_rack_template = existing_midi[0] if len(existing_midi) > 0 else None
+    midi_template = existing_midi[1] if len(existing_midi) > 1 else drum_rack_template
     audio_template = existing_audio[0] if existing_audio else None
     group_template = existing_group[0] if existing_group else None
 
@@ -391,11 +392,14 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
 
         # Select template
         if ttype == 'midi':
-            if midi_template is None:
+            if tdef.get('template') == 'drum_rack' and drum_rack_template is not None:
+                template = drum_rack_template
+            elif midi_template is not None:
+                template = midi_template
+            else:
                 if verbose:
                     print(f"  Warning: No MIDI template, skipping '{name}'")
                 continue
-            template = midi_template
         elif ttype == 'audio':
             if audio_template is None:
                 # Fall back to MIDI template and change tag
