@@ -34,8 +34,12 @@ import copy
 import gzip
 import json
 import os
+import random
+import shutil
 import sys
 import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Try to import YAML, fall back gracefully
@@ -749,6 +753,18 @@ Notes:
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed output')
 
+    # Sample picker flags
+    parser.add_argument('--samples', type=str, metavar='DIR',
+                        help='Sample library directory to pick drum samples from')
+    parser.add_argument('--vibe', type=str, default=None,
+                        help='Filter samples by vibe keyword (e.g. trap, lofi, dark)')
+    parser.add_argument('--picks', type=int, default=3,
+                        help='Number of sample options per drum slot (default: 3)')
+    parser.add_argument('--exclude', nargs='+', default=None,
+                        help='Keywords to exclude from sample picks')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Random seed for reproducible sample picks')
+
     return parser.parse_args()
 
 
@@ -839,6 +855,147 @@ def main():
     return_count = len(config.get('returns', []))
     print(f"  {track_count} tracks, {return_count} returns, {config.get('bpm', '?')} BPM")
     print(f"  Open in Ableton Live: File > Open Live Set > {args.output}")
+
+    if args.samples:
+        samples_out = os.path.join(os.path.dirname(args.output) or '.', 'session_samples')
+        run_sample_picker(
+            samples_dir=args.samples,
+            output_dir=samples_out,
+            picks=max(1, min(10, args.picks)),
+            vibe=args.vibe,
+            exclude=args.exclude,
+            seed=args.seed,
+            verbose=args.verbose,
+        )
+
+
+# ──────────────────────────────────────────────
+# Sample Picker (built-in)
+# ──────────────────────────────────────────────
+
+_SLOTS = {
+    'kick': {
+        'primary': ['kick', 'kck', 'kik', 'bd', 'bassdrum', 'bass_drum', 'bass drum'],
+        'secondary': ['808'],
+        'exclude': ['sidekick', 'hat', 'snare', 'perc', 'rim', 'clap', 'bass'],
+    },
+    'snare': {
+        'primary': ['snare', 'snr', 'sd', 'clap', 'clp', 'rim', 'rimshot', 'snap'],
+        'secondary': [],
+        'exclude': ['kick', 'hat', 'ride'],
+    },
+    'hat': {
+        'primary': ['hat', 'hh', 'hihat', 'hi-hat', 'hi hat', 'closedhat', 'openhat',
+                    'closed_hat', 'open_hat', 'ch', 'oh'],
+        'secondary': ['cymbal', 'ride', 'crash'],
+        'exclude': ['kick', 'snare', 'clap'],
+    },
+    'perc': {
+        'primary': ['perc', 'percussion', 'conga', 'bongo', 'shaker', 'tambourine',
+                    'tamb', 'cowbell', 'woodblock', 'clave', 'guiro', 'triangle',
+                    'tom', 'timbale', 'djembe', 'tabla', 'agogo', 'cabasa',
+                    'maracas', 'vibraslap', 'castanet'],
+        'secondary': ['click', 'tick', 'knock', 'tap', 'hit', 'impact',
+                      'noise', 'fx', 'effect', 'rattle', 'scrape', 'metallic'],
+        'exclude': ['kick', 'snare', 'hat', 'hihat', 'clap'],
+    },
+}
+_AUDIO_EXTENSIONS = {'.wav', '.aif', '.aiff', '.flac', '.mp3', '.ogg'}
+
+
+def _sp_classify(search_str: str, filename_str: str) -> Optional[str]:
+    for slot, rules in _SLOTS.items():
+        for keyword in rules['primary']:
+            if keyword in filename_str or keyword in search_str.split(os.sep)[-3:]:
+                if not any(ex in filename_str for ex in rules['exclude']):
+                    return slot
+    for slot, rules in _SLOTS.items():
+        for keyword in rules['secondary']:
+            if keyword in filename_str:
+                if not any(ex in filename_str for ex in rules['exclude']):
+                    return slot
+    return None
+
+
+def _sp_scan(root_dir: str) -> Dict[str, List[str]]:
+    classified: Dict[str, List[str]] = defaultdict(list)
+    root_path = Path(root_dir)
+    if not root_path.exists():
+        print(f"Error: Sample directory not found: {root_dir}")
+        sys.exit(1)
+    for filepath in root_path.rglob('*'):
+        if filepath.is_file() and filepath.suffix.lower() in _AUDIO_EXTENSIONS:
+            slot = _sp_classify(str(filepath).lower(), filepath.stem.lower())
+            if slot:
+                classified[slot].append(str(filepath))
+    return dict(classified)
+
+
+def _sp_filter_vibe(samples: Dict[str, List[str]], vibe: str) -> Dict[str, List[str]]:
+    return {slot: ([p for p in paths if vibe.lower() in p.lower()] or paths)
+            for slot, paths in samples.items()}
+
+
+def _sp_filter_exclude(samples: Dict[str, List[str]], exclude: List[str]) -> Dict[str, List[str]]:
+    return {slot: ([p for p in paths if not any(ex.lower() in p.lower() for ex in exclude)] or paths)
+            for slot, paths in samples.items()}
+
+
+def _sp_pick(samples: Dict[str, List[str]], picks: int, seed: Optional[int]) -> Dict[str, List[str]]:
+    if seed is not None:
+        random.seed(seed)
+    result = {}
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        pool = samples.get(slot, [])
+        result[slot] = random.sample(pool, min(picks, len(pool))) if pool else []
+    return result
+
+
+def _sp_copy(picks: Dict[str, List[str]], output_dir: str):
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        slot_dir = out / slot
+        slot_dir.mkdir(exist_ok=True)
+        for i, src in enumerate(picks.get(slot, []), 1):
+            shutil.copy2(src, slot_dir / f"{i}_{Path(src).name}")
+    # Write sample map
+    lines = ["Sample Picks", "=" * 40, ""]
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        paths = picks.get(slot, [])
+        lines.append(f"{slot.upper()} ({len(paths)} options):")
+        for i, p in enumerate(paths, 1):
+            lines.append(f"  {i}. {Path(p).name}")
+            lines.append(f"     Source: {p}")
+        lines.append("")
+    (out / "sample_map.txt").write_text('\n'.join(lines))
+
+
+def run_sample_picker(samples_dir: str, output_dir: str, picks: int,
+                      vibe: Optional[str], exclude: Optional[List[str]],
+                      seed: Optional[int], verbose: bool):
+    samples_dir = os.path.expanduser(samples_dir)
+    print(f"\n  Scanning samples: {samples_dir}")
+    classified = _sp_scan(samples_dir)
+    total = sum(len(v) for v in classified.values())
+    if total == 0:
+        print("  Warning: No drum samples found in that directory — skipping sample pick.")
+        return
+    if verbose:
+        for slot in ['kick', 'snare', 'hat', 'perc']:
+            print(f"    {slot:>6}: {len(classified.get(slot, []))} found")
+    filtered = classified
+    if vibe:
+        filtered = _sp_filter_vibe(filtered, vibe)
+        print(f"  Vibe filter: '{vibe}'")
+    if exclude:
+        filtered = _sp_filter_exclude(filtered, exclude)
+    picked = _sp_pick(filtered, picks, seed)
+    _sp_copy(picked, output_dir)
+    print(f"  Samples → {output_dir}/")
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        n = len(picked.get(slot, []))
+        print(f"    {slot:>6}: {n} option{'s' if n != 1 else ''}")
 
 
 if __name__ == '__main__':
