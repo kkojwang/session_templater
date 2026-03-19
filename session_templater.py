@@ -519,12 +519,30 @@ AUDIO_EXTENSIONS = {'.wav', '.aif', '.aiff', '.flac', '.mp3', '.ogg'}
 # Keywords that indicate a file is a loop rather than a one-shot
 LOOP_KEYWORDS = {'loop', 'loops', 'looped', 'looping', '_lp_', '-lp-', ' lp '}
 
+# One-shots shouldn't be longer than this (in seconds)
+MAX_ONESHOT_DURATION = 3.0
+
 
 def _is_loop(filepath: Path) -> bool:
     """Return True if the file appears to be a loop rather than a one-shot."""
-    # Check filename and immediate parent folder name
     check = (filepath.stem + ' ' + filepath.parent.name).lower()
     return any(kw in check for kw in LOOP_KEYWORDS)
+
+
+def _get_duration(filepath: Path) -> Optional[float]:
+    """Return duration in seconds for WAV/AIF files. Returns None for other formats."""
+    import wave, aifc
+    suffix = filepath.suffix.lower()
+    try:
+        if suffix == '.wav':
+            with wave.open(str(filepath), 'rb') as f:
+                return f.getnframes() / f.getframerate()
+        elif suffix in ('.aif', '.aiff'):
+            with aifc.open(str(filepath), 'rb') as f:
+                return f.getnframes() / f.getframerate()
+    except Exception:
+        pass
+    return None
 
 
 def _classify_sample(filename_str: str, parent_str: str) -> Optional[str]:
@@ -563,6 +581,11 @@ def scan_samples(root_dir: str, verbose: bool = False) -> Dict[str, List[str]]:
         audio_files += 1
 
         if _is_loop(filepath):
+            loops_skipped += 1
+            continue
+
+        duration = _get_duration(filepath)
+        if duration is not None and duration > MAX_ONESHOT_DURATION:
             loops_skipped += 1
             continue
 
