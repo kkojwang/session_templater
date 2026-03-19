@@ -891,8 +891,10 @@ Workflow:
                         help='Base .als file to use as template (any valid Ableton set)')
     parser.add_argument('--config', '-c', type=str,
                         help='Config file (YAML or JSON) defining the session')
-    parser.add_argument('--output', '-o', type=str, default='session_output.als',
-                        help='Output .als filename (default: session_output.als)')
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    parser.add_argument('--output', '-o', type=str,
+                        default=os.path.join(_script_dir, 'session_output.als'),
+                        help='Output .als filename (default: session_templater/session_output.als)')
     parser.add_argument('--no-compress', action='store_true',
                         help='Save as uncompressed XML (Ableton can read both)')
 
