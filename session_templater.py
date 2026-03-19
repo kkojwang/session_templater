@@ -133,6 +133,7 @@ def read_als(path: str) -> ET.Element:
 
 def write_als(root: ET.Element, path: str, compress: bool = True):
     """Write an Element tree to an .als file."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     xml_bytes = ET.tostring(root, encoding='UTF-8', xml_declaration=True)
 
     if compress:
