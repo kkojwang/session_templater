@@ -14,12 +14,12 @@ a known-good file. Ableton is very forgiving about extra XML it doesn't recogniz
 so this approach is robust across versions.
 
 Usage:
-    python3 session_templater.py --base default.als --config my_template.yaml -o output.als
-    python3 session_templater.py --base default.als --config hiphop.yaml --verbose
-    python3 session_templater.py --create-config                # generate a sample config
-    python3 session_templater.py --create-config --style mixing  # mixing template preset
-    python3 session_templater.py --list-styles                  # list config presets
-    python3 session_templater.py --inspect my_session.als       # inspect an existing .als
+    python session_templater.py --base default.als --config my_template.yaml -o output.als
+    python session_templater.py --base default.als --config hiphop.yaml --verbose
+    python session_templater.py --create-config                # generate a sample config
+    python session_templater.py --create-config --style mixing  # mixing template preset
+    python session_templater.py --list-styles                  # list config presets
+    python session_templater.py --inspect my_session.als       # inspect an existing .als
 
 Requirements:
     - Python 3.7+
@@ -133,7 +133,11 @@ def read_als(path: str) -> ET.Element:
 
 def write_als(root: ET.Element, path: str, compress: bool = True):
     """Write an Element tree to an .als file."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    # Ensure output directory exists
+    out_dir = os.path.dirname(path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     xml_bytes = ET.tostring(root, encoding='UTF-8', xml_declaration=True)
 
     if compress:
@@ -442,36 +446,188 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
     if return_defs:
         existing_returns = live_set.findall('.//ReturnTrack')
         if existing_returns:
-            return_template = existing_returns[0]
-            # Find the parent of return tracks
-            # In ALS XML, returns are usually under SendsListPreset or directly under LiveSet
-            # We'll find and modify them
+            # Only rename/recolor existing return tracks.
+            # Adding new returns would break send knob counts on tracks.
+            # If you need more returns, add them in Ableton and re-save your base file.
             for i, rdef in enumerate(return_defs):
+                if i >= len(existing_returns):
+                    if verbose:
+                        remaining = len(return_defs) - len(existing_returns)
+                        print(f"  ⚠ Base file only has {len(existing_returns)} return tracks, "
+                              f"skipping {remaining} extra return(s) from config.")
+                        print(f"    To fix: add more returns in Ableton and re-save your base .als")
+                    break
+
                 rname = rdef.get('name', f'Return {chr(65 + i)}')
                 rcolor = resolve_color(rdef.get('color', 'gray'))
-
-                if i < len(existing_returns):
-                    # Modify existing return
-                    _set_track_name(existing_returns[i], rname)
-                    _set_track_color(existing_returns[i], rcolor)
-                else:
-                    # Clone a new return
-                    new_return = _clone_track(return_template, current_id)
-                    _set_track_name(new_return, rname)
-                    _set_track_color(new_return, rcolor)
-                    # Insert after existing returns
-                    parent = live_set
-                    for p in live_set.iter():
-                        if return_template in list(p):
-                            parent = p
-                            break
-                    parent.append(new_return)
-                    current_id += 1
+                _set_track_name(existing_returns[i], rname)
+                _set_track_color(existing_returns[i], rcolor)
 
                 if verbose:
                     print(f"  + return │ {rname:<25} color={rcolor}")
 
     return root
+
+
+# ──────────────────────────────────────────────
+# Sample Picker
+# ──────────────────────────────────────────────
+
+SAMPLE_SLOTS = {
+    'kick': {
+        'primary': ['kick', 'kck', 'kik', 'bd', 'bassdrum', 'bass_drum', 'bass drum'],
+        'secondary': ['808'],
+        'exclude': ['sidekick', 'hat', 'snare', 'perc', 'rim', 'clap', 'bass'],
+    },
+    'snare': {
+        'primary': ['snare', 'snr', 'sd', 'clap', 'clp', 'rim', 'rimshot', 'snap'],
+        'secondary': [],
+        'exclude': ['kick', 'hat', 'ride'],
+    },
+    'hat': {
+        'primary': [
+            'hat', 'hh', 'hihat', 'hi-hat', 'hi hat',
+            'closedhat', 'openhat', 'closed_hat', 'open_hat', 'ch', 'oh',
+        ],
+        'secondary': ['cymbal', 'ride', 'crash'],
+        'exclude': ['kick', 'snare', 'clap'],
+    },
+    'perc': {
+        'primary': [
+            'perc', 'percussion', 'conga', 'bongo', 'shaker', 'tambourine',
+            'tamb', 'cowbell', 'woodblock', 'clave', 'guiro', 'triangle',
+            'tom', 'timbale', 'djembe', 'tabla', 'agogo', 'cabasa',
+            'maracas', 'vibraslap', 'castanet',
+        ],
+        'secondary': [
+            'click', 'tick', 'knock', 'tap', 'hit', 'impact',
+            'noise', 'fx', 'effect', 'rattle', 'scrape', 'metallic',
+        ],
+        'exclude': ['kick', 'snare', 'hat', 'hihat', 'clap'],
+    },
+}
+
+AUDIO_EXTENSIONS = {'.wav', '.aif', '.aiff', '.flac', '.mp3', '.ogg'}
+
+
+def _classify_sample(search_str: str, filename_str: str) -> Optional[str]:
+    """Classify a file into a drum slot based on keywords."""
+    for slot, rules in SAMPLE_SLOTS.items():
+        for keyword in rules['primary']:
+            if keyword in filename_str or keyword in search_str.split(os.sep)[-3:]:
+                if not any(excl in filename_str for excl in rules['exclude']):
+                    return slot
+    for slot, rules in SAMPLE_SLOTS.items():
+        for keyword in rules['secondary']:
+            if keyword in filename_str:
+                if not any(excl in filename_str for excl in rules['exclude']):
+                    return slot
+    return None
+
+
+def scan_samples(root_dir: str, verbose: bool = False) -> Dict[str, List[str]]:
+    """Recursively scan a directory and classify audio files into drum slots."""
+    classified: Dict[str, List[str]] = defaultdict(list)
+    audio_files = 0
+
+    for filepath in Path(root_dir).rglob('*'):
+        if not filepath.is_file() or filepath.suffix.lower() not in AUDIO_EXTENSIONS:
+            continue
+        audio_files += 1
+        slot = _classify_sample(str(filepath).lower(), filepath.stem.lower())
+        if slot:
+            classified[slot].append(str(filepath))
+
+    if verbose:
+        print(f"  Scanned {audio_files} audio files")
+        for slot in ['kick', 'snare', 'hat', 'perc']:
+            print(f"  {slot:>6}: {len(classified.get(slot, []))} samples found")
+
+    return dict(classified)
+
+
+def pick_samples(
+    samples: Dict[str, List[str]],
+    picks_per_slot: int = 3,
+    vibe: Optional[str] = None,
+    exclude: Optional[List[str]] = None,
+    seed: Optional[int] = None,
+) -> Dict[str, List[str]]:
+    """Filter and pick N random samples per slot."""
+    if seed is not None:
+        random.seed(seed)
+
+    # Filter by vibe
+    if vibe:
+        filtered = {}
+        for slot, paths in samples.items():
+            matching = [p for p in paths if vibe.lower() in p.lower()]
+            filtered[slot] = matching if matching else paths
+        samples = filtered
+
+    # Filter by exclude
+    if exclude:
+        filtered = {}
+        for slot, paths in samples.items():
+            kept = [p for p in paths if not any(ex.lower() in p.lower() for ex in exclude)]
+            filtered[slot] = kept if kept else paths
+        samples = filtered
+
+    # Pick
+    picked = {}
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        pool = samples.get(slot, [])
+        n = min(picks_per_slot, len(pool))
+        picked[slot] = random.sample(pool, n) if pool else []
+
+    return picked
+
+
+def copy_sample_picks(picks: Dict[str, List[str]], output_dir: str, verbose: bool = False):
+    """Copy picked samples into a clean folder structure."""
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    total = 0
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        slot_dir = out_path / slot
+        slot_dir.mkdir(exist_ok=True)
+        for i, src_path in enumerate(picks.get(slot, []), 1):
+            src = Path(src_path)
+            dest = slot_dir / f"{i}_{src.name}"
+            shutil.copy2(str(src), str(dest))
+            total += 1
+            if verbose:
+                print(f"  {slot:>6} {i}: {src.name}")
+
+    # Write sample map
+    lines = ["Sample Picks", "=" * 40, ""]
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        paths = picks.get(slot, [])
+        lines.append(f"{slot.upper()} ({len(paths)} options):")
+        for i, p in enumerate(paths, 1):
+            lines.append(f"  {i}. {Path(p).name}")
+            lines.append(f"     Source: {p}")
+        lines.append("")
+    lines.append("Drag your favorites into your DAW session.")
+    (out_path / "sample_map.txt").write_text('\n'.join(lines))
+
+    return total
+
+
+def print_sample_summary(picks: Dict[str, List[str]]):
+    """Print a summary of picked samples."""
+    for slot in ['kick', 'snare', 'hat', 'perc']:
+        paths = picks.get(slot, [])
+        if not paths:
+            print(f"  {slot:>6}: (none found)")
+            continue
+        print(f"  {slot:>6}: {len(paths)} options")
+        for i, p in enumerate(paths, 1):
+            name = Path(p).name
+            if len(name) > 48:
+                name = name[:45] + '...'
+            print(f"    {i}. {name}")
 
 
 # ──────────────────────────────────────────────
@@ -481,6 +637,7 @@ def apply_config(root: ET.Element, config: dict, verbose: bool = False) -> ET.El
 STYLES = {
     'default': {
         'description': 'Basic starter template: drums, bass, synth, vocal + 2 returns',
+        'default_vibe': None,
         'config': {
             'bpm': 120,
             'time_signature': '4/4',
@@ -503,6 +660,7 @@ STYLES = {
     },
     'hiphop': {
         'description': 'Hip-hop / beat production layout',
+        'default_vibe': 'trap',
         'config': {
             'bpm': 90,
             'time_signature': '4/4',
@@ -528,6 +686,7 @@ STYLES = {
     },
     'techno': {
         'description': 'Techno / electronic production layout',
+        'default_vibe': 'dark',
         'config': {
             'bpm': 130,
             'time_signature': '4/4',
@@ -556,6 +715,7 @@ STYLES = {
     },
     'ambient': {
         'description': 'Ambient / textural / atmospheric layout',
+        'default_vibe': 'texture',
         'config': {
             'bpm': 80,
             'time_signature': '4/4',
@@ -578,6 +738,7 @@ STYLES = {
     },
     'mixing': {
         'description': 'Mixing/mastering template with stem groups',
+        'default_vibe': None,
         'config': {
             'bpm': 120,
             'time_signature': '4/4',
@@ -614,6 +775,7 @@ STYLES = {
     },
     'live-performance': {
         'description': 'Live performance / DJ hybrid set',
+        'default_vibe': None,
         'config': {
             'bpm': 126,
             'time_signature': '4/4',
@@ -667,8 +829,7 @@ def create_sample_config(style: str = 'default', output_format: str = 'yaml') ->
         content = json.dumps(config, indent=2)
         ext = 'json'
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    filename = os.path.join(script_dir, f"template_{style}.{ext}")
+    filename = f"template_{style}.{ext}"
     with open(filename, 'w') as f:
         f.write(content)
 
@@ -707,24 +868,22 @@ def parse_args():
         epilog="""
 Examples:
   %(prog)s --base default.als --config template.yaml -o my_session.als
-  %(prog)s --create-config                     # default template
-  %(prog)s --create-config --style techno       # techno template
-  %(prog)s --create-config --style mixing       # mixing template
-  %(prog)s --list-styles                        # see all presets
-  %(prog)s --inspect my_session.als             # inspect existing .als
+  %(prog)s --create-config --style techno
+  %(prog)s --list-styles
+  %(prog)s --inspect my_session.als
+
+With sample picking:
+  %(prog)s --base default.als --config techno.yaml --samples ~/Splice/sounds
+  %(prog)s --base default.als --config techno.yaml --samples ~/Splice/sounds --vibe dark --picks 5
+  %(prog)s --base default.als --config hiphop.yaml --samples ~/Splice/sounds --exclude acoustic
+  %(prog)s --scan-samples ~/Splice/sounds
 
 Workflow:
   1. Save any Ableton set as your base:  File > Save As > default.als
   2. Generate a config:  %(prog)s --create-config --style hiphop
-  3. Edit template_hiphop.yaml to taste
-  4. Generate:  %(prog)s --base default.als --config template_hiphop.yaml -o session.als
-  5. Open session.als in Ableton Live!
-
-Notes:
-  - The base .als provides the XML structure (version, device chains, etc.)
-  - The config controls track layout, naming, colors, groups, tempo
-  - Use --inspect on your base file first to understand its structure
-  - Ableton reads both gzipped and raw XML .als files
+  3. Edit the YAML to taste
+  4. Generate:  %(prog)s --base default.als --config template_hiphop.yaml --samples ~/Splice/sounds
+  5. Open the .als in Ableton, drag samples from the samples/ folder
         """
     )
 
@@ -751,20 +910,24 @@ Notes:
     parser.add_argument('--list-colors', action='store_true',
                         help='List available color names')
 
+    # Sample picker
+    sample_group = parser.add_argument_group('sample picking',
+        'Scan a local sample library and pick drum samples alongside the session')
+    sample_group.add_argument('--samples', type=str, metavar='DIR',
+                              help='Sample library directory to scan (e.g. ~/Splice/sounds)')
+    sample_group.add_argument('--vibe', type=str, default=None,
+                              help='Filter keyword (e.g. lofi, trap, dark, vinyl, acoustic)')
+    sample_group.add_argument('--picks', type=int, default=3,
+                              help='Options per drum slot (default: 3, max: 10)')
+    sample_group.add_argument('--exclude', nargs='+', default=None,
+                              help='Keywords to exclude (e.g. --exclude acoustic orchestral)')
+    sample_group.add_argument('--seed', type=int, default=None,
+                              help='Random seed for reproducible picks')
+    sample_group.add_argument('--scan-samples', type=str, metavar='DIR',
+                              help='Just scan a sample directory and report counts')
+
     parser.add_argument('--verbose', '-v', action='store_true',
                         help='Print detailed output')
-
-    # Sample picker flags
-    parser.add_argument('--samples', type=str, metavar='DIR',
-                        help='Sample library directory to pick drum samples from')
-    parser.add_argument('--vibe', type=str, default=None,
-                        help='Filter samples by vibe keyword (e.g. trap, lofi, dark)')
-    parser.add_argument('--picks', type=int, default=3,
-                        help='Number of sample options per drum slot (default: 3)')
-    parser.add_argument('--exclude', nargs='+', default=None,
-                        help='Keywords to exclude from sample picks')
-    parser.add_argument('--seed', type=int, default=None,
-                        help='Random seed for reproducible sample picks')
 
     return parser.parse_args()
 
@@ -810,6 +973,16 @@ def main():
         print(f"  python session_templater.py --base your_set.als --config {filename}")
         return
 
+    # ── Scan samples only ──
+    if args.scan_samples:
+        sample_dir = os.path.expanduser(args.scan_samples)
+        if not os.path.exists(sample_dir):
+            print(f"Error: Directory not found: {sample_dir}")
+            sys.exit(1)
+        print(f"\n🔍 Scanning: {sample_dir}")
+        scan_samples(sample_dir, verbose=True)
+        return
+
     # ── Inspect ──
     if args.inspect:
         if not os.path.exists(args.inspect):
@@ -840,6 +1013,8 @@ def main():
         print(f"  Base: {args.base}")
         print(f"  Config: {args.config}")
         print(f"  Output: {args.output}")
+        if args.samples:
+            print(f"  Samples: {args.samples}")
         print(f"{'─' * 60}")
 
     config = load_config(args.config)
@@ -851,152 +1026,59 @@ def main():
     # Save
     write_als(root, args.output, compress=not args.no_compress)
 
-    print(f"\n✓ Generated: {args.output}")
     track_count = len(config.get('tracks', []))
     return_count = len(config.get('returns', []))
+    print(f"\n✓ Generated: {args.output}")
     print(f"  {track_count} tracks, {return_count} returns, {config.get('bpm', '?')} BPM")
-    print(f"  Open in Ableton Live: File > Open Live Set > {args.output}")
 
+    # ── Sample picking (if requested) ──
     if args.samples:
-        samples_out = os.path.join(os.path.dirname(args.output) or '.', 'session_samples')
-        run_sample_picker(
-            samples_dir=args.samples,
-            output_dir=samples_out,
-            picks=max(1, min(10, args.picks)),
-            vibe=args.vibe,
-            exclude=args.exclude,
-            seed=args.seed,
-            verbose=args.verbose,
-        )
+        sample_dir = os.path.expanduser(args.samples)
+        if not os.path.exists(sample_dir):
+            print(f"\n⚠ Sample directory not found: {sample_dir}")
+        else:
+            # Determine output samples folder next to the .als file
+            als_dir = os.path.dirname(os.path.abspath(args.output))
+            als_stem = Path(args.output).stem
+            samples_out = os.path.join(als_dir, f"{als_stem}_samples")
 
+            # Resolve vibe: explicit flag > style default > none
+            vibe = args.vibe
+            if vibe is None:
+                # Try to get default vibe from the style used in config generation
+                for style_name, style_def in STYLES.items():
+                    if style_def['config'] == config:
+                        vibe = style_def.get('default_vibe')
+                        break
 
-# ──────────────────────────────────────────────
-# Sample Picker (built-in)
-# ──────────────────────────────────────────────
+            picks_count = max(1, min(10, args.picks))
 
-_SLOTS = {
-    'kick': {
-        'primary': ['kick', 'kck', 'kik', 'bd', 'bassdrum', 'bass_drum', 'bass drum'],
-        'secondary': ['808'],
-        'exclude': ['sidekick', 'hat', 'snare', 'perc', 'rim', 'clap', 'bass'],
-    },
-    'snare': {
-        'primary': ['snare', 'snr', 'sd', 'clap', 'clp', 'rim', 'rimshot', 'snap'],
-        'secondary': [],
-        'exclude': ['kick', 'hat', 'ride'],
-    },
-    'hat': {
-        'primary': ['hat', 'hh', 'hihat', 'hi-hat', 'hi hat', 'closedhat', 'openhat',
-                    'closed_hat', 'open_hat', 'ch', 'oh'],
-        'secondary': ['cymbal', 'ride', 'crash'],
-        'exclude': ['kick', 'snare', 'clap'],
-    },
-    'perc': {
-        'primary': ['perc', 'percussion', 'conga', 'bongo', 'shaker', 'tambourine',
-                    'tamb', 'cowbell', 'woodblock', 'clave', 'guiro', 'triangle',
-                    'tom', 'timbale', 'djembe', 'tabla', 'agogo', 'cabasa',
-                    'maracas', 'vibraslap', 'castanet'],
-        'secondary': ['click', 'tick', 'knock', 'tap', 'hit', 'impact',
-                      'noise', 'fx', 'effect', 'rattle', 'scrape', 'metallic'],
-        'exclude': ['kick', 'snare', 'hat', 'hihat', 'clap'],
-    },
-}
-_AUDIO_EXTENSIONS = {'.wav', '.aif', '.aiff', '.flac', '.mp3', '.ogg'}
+            print(f"\n🔍 Scanning samples: {sample_dir}")
+            classified = scan_samples(sample_dir, verbose=args.verbose)
 
+            total = sum(len(v) for v in classified.values())
+            if total == 0:
+                print("  No drum samples found in that directory.")
+            else:
+                if vibe:
+                    print(f"🎨 Vibe: '{vibe}'")
 
-def _sp_classify(search_str: str, filename_str: str) -> Optional[str]:
-    for slot, rules in _SLOTS.items():
-        for keyword in rules['primary']:
-            if keyword in filename_str or keyword in search_str.split(os.sep)[-3:]:
-                if not any(ex in filename_str for ex in rules['exclude']):
-                    return slot
-    for slot, rules in _SLOTS.items():
-        for keyword in rules['secondary']:
-            if keyword in filename_str:
-                if not any(ex in filename_str for ex in rules['exclude']):
-                    return slot
-    return None
+                picks = pick_samples(
+                    classified,
+                    picks_per_slot=picks_count,
+                    vibe=vibe,
+                    exclude=args.exclude,
+                    seed=args.seed,
+                )
 
+                sample_total = copy_sample_picks(picks, samples_out, verbose=args.verbose)
 
-def _sp_scan(root_dir: str) -> Dict[str, List[str]]:
-    classified: Dict[str, List[str]] = defaultdict(list)
-    root_path = Path(root_dir)
-    if not root_path.exists():
-        print(f"Error: Sample directory not found: {root_dir}")
-        sys.exit(1)
-    for filepath in root_path.rglob('*'):
-        if filepath.is_file() and filepath.suffix.lower() in _AUDIO_EXTENSIONS:
-            slot = _sp_classify(str(filepath).lower(), filepath.stem.lower())
-            if slot:
-                classified[slot].append(str(filepath))
-    return dict(classified)
+                print(f"\n✓ {sample_total} samples → {samples_out}/")
+                print_sample_summary(picks)
 
-
-def _sp_filter_vibe(samples: Dict[str, List[str]], vibe: str) -> Dict[str, List[str]]:
-    return {slot: ([p for p in paths if vibe.lower() in p.lower()] or paths)
-            for slot, paths in samples.items()}
-
-
-def _sp_filter_exclude(samples: Dict[str, List[str]], exclude: List[str]) -> Dict[str, List[str]]:
-    return {slot: ([p for p in paths if not any(ex.lower() in p.lower() for ex in exclude)] or paths)
-            for slot, paths in samples.items()}
-
-
-def _sp_pick(samples: Dict[str, List[str]], picks: int, seed: Optional[int]) -> Dict[str, List[str]]:
-    if seed is not None:
-        random.seed(seed)
-    result = {}
-    for slot in ['kick', 'snare', 'hat', 'perc']:
-        pool = samples.get(slot, [])
-        result[slot] = random.sample(pool, min(picks, len(pool))) if pool else []
-    return result
-
-
-def _sp_copy(picks: Dict[str, List[str]], output_dir: str):
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    for slot in ['kick', 'snare', 'hat', 'perc']:
-        slot_dir = out / slot
-        slot_dir.mkdir(exist_ok=True)
-        for i, src in enumerate(picks.get(slot, []), 1):
-            shutil.copy2(src, slot_dir / f"{i}_{Path(src).name}")
-    # Write sample map
-    lines = ["Sample Picks", "=" * 40, ""]
-    for slot in ['kick', 'snare', 'hat', 'perc']:
-        paths = picks.get(slot, [])
-        lines.append(f"{slot.upper()} ({len(paths)} options):")
-        for i, p in enumerate(paths, 1):
-            lines.append(f"  {i}. {Path(p).name}")
-            lines.append(f"     Source: {p}")
-        lines.append("")
-    (out / "sample_map.txt").write_text('\n'.join(lines))
-
-
-def run_sample_picker(samples_dir: str, output_dir: str, picks: int,
-                      vibe: Optional[str], exclude: Optional[List[str]],
-                      seed: Optional[int], verbose: bool):
-    samples_dir = os.path.expanduser(samples_dir)
-    print(f"\n  Scanning samples: {samples_dir}")
-    classified = _sp_scan(samples_dir)
-    total = sum(len(v) for v in classified.values())
-    if total == 0:
-        print("  Warning: No drum samples found in that directory — skipping sample pick.")
-        return
-    if verbose:
-        for slot in ['kick', 'snare', 'hat', 'perc']:
-            print(f"    {slot:>6}: {len(classified.get(slot, []))} found")
-    filtered = classified
-    if vibe:
-        filtered = _sp_filter_vibe(filtered, vibe)
-        print(f"  Vibe filter: '{vibe}'")
-    if exclude:
-        filtered = _sp_filter_exclude(filtered, exclude)
-    picked = _sp_pick(filtered, picks, seed)
-    _sp_copy(picked, output_dir)
-    print(f"  Samples → {output_dir}/")
-    for slot in ['kick', 'snare', 'hat', 'perc']:
-        n = len(picked.get(slot, []))
-        print(f"    {slot:>6}: {n} option{'s' if n != 1 else ''}")
+    print(f"\n  Open in Ableton: File > Open Live Set > {args.output}")
+    if args.samples:
+        print(f"  Add samples folder to browser: {samples_out}")
 
 
 if __name__ == '__main__':
