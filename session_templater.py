@@ -516,39 +516,64 @@ SAMPLE_SLOTS = {
 
 AUDIO_EXTENSIONS = {'.wav', '.aif', '.aiff', '.flac', '.mp3', '.ogg'}
 
+# Keywords that indicate a file is a loop rather than a one-shot
+LOOP_KEYWORDS = {'loop', 'loops', 'looped', 'looping', '_lp_', '-lp-', ' lp '}
 
-def _classify_sample(search_str: str, filename_str: str) -> Optional[str]:
-    """Classify a file into a drum slot based on keywords."""
+
+def _is_loop(filepath: Path) -> bool:
+    """Return True if the file appears to be a loop rather than a one-shot."""
+    # Check filename and immediate parent folder name
+    check = (filepath.stem + ' ' + filepath.parent.name).lower()
+    return any(kw in check for kw in LOOP_KEYWORDS)
+
+
+def _classify_sample(filename_str: str, parent_str: str) -> Optional[str]:
+    """Classify a file into a drum slot based on keywords.
+
+    Prioritises filename matches; falls back to parent folder only for primary keywords.
+    """
+    # Primary: filename first, then parent folder as a weaker signal
     for slot, rules in SAMPLE_SLOTS.items():
         for keyword in rules['primary']:
-            if keyword in filename_str or keyword in search_str.split(os.sep)[-3:]:
+            in_filename = keyword in filename_str
+            in_parent = keyword in parent_str
+            if in_filename or in_parent:
                 if not any(excl in filename_str for excl in rules['exclude']):
                     return slot
+
+    # Secondary: filename only (too noisy to trust folder names here)
     for slot, rules in SAMPLE_SLOTS.items():
         for keyword in rules['secondary']:
             if keyword in filename_str:
                 if not any(excl in filename_str for excl in rules['exclude']):
                     return slot
+
     return None
 
 
 def scan_samples(root_dir: str, verbose: bool = False) -> Dict[str, List[str]]:
-    """Recursively scan a directory and classify audio files into drum slots."""
+    """Recursively scan a directory and classify one-shot audio files into drum slots."""
     classified: Dict[str, List[str]] = defaultdict(list)
     audio_files = 0
+    loops_skipped = 0
 
     for filepath in Path(root_dir).rglob('*'):
         if not filepath.is_file() or filepath.suffix.lower() not in AUDIO_EXTENSIONS:
             continue
         audio_files += 1
-        slot = _classify_sample(str(filepath).lower(), filepath.stem.lower())
+
+        if _is_loop(filepath):
+            loops_skipped += 1
+            continue
+
+        slot = _classify_sample(filepath.stem.lower(), filepath.parent.name.lower())
         if slot:
             classified[slot].append(str(filepath))
 
     if verbose:
-        print(f"  Scanned {audio_files} audio files")
+        print(f"  Scanned {audio_files} audio files ({loops_skipped} loops skipped)")
         for slot in ['kick', 'snare', 'hat', 'perc']:
-            print(f"  {slot:>6}: {len(classified.get(slot, []))} samples found")
+            print(f"  {slot:>6}: {len(classified.get(slot, []))} one-shots found")
 
     return dict(classified)
 
