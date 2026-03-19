@@ -14,12 +14,12 @@ a known-good file. Ableton is very forgiving about extra XML it doesn't recogniz
 so this approach is robust across versions.
 
 Usage:
-    python session_templater.py --base default.als --config my_template.yaml -o output.als
-    python session_templater.py --base default.als --config hiphop.yaml --verbose
-    python session_templater.py --create-config                # generate a sample config
-    python session_templater.py --create-config --style mixing  # mixing template preset
-    python session_templater.py --list-styles                  # list config presets
-    python session_templater.py --inspect my_session.als       # inspect an existing .als
+    python3 session_templater.py --base default.als --config my_template.yaml -o output.als
+    python3 session_templater.py --base default.als --config hiphop.yaml --verbose
+    python3 session_templater.py --create-config                # generate a sample config
+    python3 session_templater.py --create-config --style mixing  # mixing template preset
+    python3 session_templater.py --list-styles                  # list config presets
+    python3 session_templater.py --inspect my_session.als       # inspect an existing .als
 
 Requirements:
     - Python 3.7+
